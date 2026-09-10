@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<!--
+  C06 标定看板(GitHub Pages 版,工厂直接开网址看,无需任何令牌)
+  数据 = 同目录 data.json,由 .github/workflows/c06-board.yml 在每台标定 run
+  结束时(+定时兜底)重新聚合发布。页面每 60 秒拉一次带时间戳的 data.json 防 CDN 缓存。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C06 标定看板</title>
+<style>
+:root{
+  --bg:#f3f5f3; --surface:#ffffff; --ink:#182220; --muted:#5f6d67; --line:#d9e0dc;
+  --pass:#0c7a3d; --pass-bg:#e2f3e8; --pass-line:#b5dfc4;
+  --fail:#b32316; --fail-bg:#fae8e5;
+  --run:#96560a;  --run-bg:#fcf1dd;
+}
+*{box-sizing:border-box}
+body{margin:0; background:var(--bg); color:var(--ink);
+  font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif; font-size:15px}
+.wrap{max-width:1200px; margin:0 auto; padding:22px 24px 48px}
+header{display:flex; flex-wrap:wrap; align-items:center; gap:10px 18px}
+h1{font-size:24px; margin:0; letter-spacing:.03em}
+.fresh{margin-left:auto; font-size:14px; color:var(--muted); display:flex; align-items:center; gap:8px}
+.dot{width:9px; height:9px; border-radius:50%; background:var(--pass)}
+.dot.bad{background:var(--fail)}
+.tiles{display:flex; flex-wrap:wrap; gap:14px; margin:18px 0 22px}
+.tile{background:var(--surface); border:1px solid var(--line); border-radius:10px;
+  padding:14px 22px 12px; min-width:140px; flex:1 1 140px; max-width:220px}
+.tile .n{font-size:44px; font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums}
+.tile .l{font-size:14px; color:var(--muted); letter-spacing:.1em; margin-top:2px}
+.tile.pass .n{color:var(--pass)} .tile.fail .n{color:var(--fail)} .tile.run .n{color:var(--run)}
+h2{font-size:16px; color:var(--muted); font-weight:500; letter-spacing:.1em; margin:26px 0 10px}
+.grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:10px}
+.chip{border-radius:8px; padding:10px 14px; font-variant-numeric:tabular-nums;
+  font-family:Consolas,"Courier New",monospace; font-size:19px; font-weight:600;
+  display:flex; align-items:baseline; justify-content:space-between; gap:8px}
+.chip small{font-family:"Microsoft YaHei",sans-serif; font-size:11px; font-weight:400; opacity:.75}
+.chip.pass{background:var(--pass-bg); color:var(--pass); border:1px solid var(--pass-line)}
+.chip.fail{background:var(--fail-bg); color:var(--fail); border:1px solid transparent}
+.chip.run{background:var(--run-bg); color:var(--run); border:1px solid transparent}
+.chip.run .b{animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.chip.run .b{animation:none}}
+.empty{color:var(--muted); padding:6px 2px}
+.banner{background:var(--fail-bg); color:var(--fail); border-radius:8px; padding:10px 14px;
+  margin:14px 0; display:none}
+.footnote{margin-top:26px; font-size:12.5px; color:var(--muted); line-height:1.7}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <h1>C06 云标定看板</h1>
+    <span class="fresh"><span class="dot" id="dot"></span><span id="fresh">加载中…</span></span>
+  </header>
+
+  <div class="tiles">
+    <div class="tile pass"><div class="n" id="n-pass">–</div><div class="l">已合格</div></div>
+    <div class="tile run"><div class="n" id="n-run">–</div><div class="l">标定中</div></div>
+    <div class="tile fail"><div class="n" id="n-fail">–</div><div class="l">失败待处理</div></div>
+    <div class="tile"><div class="n" id="n-all">–</div><div class="l">总台数</div></div>
+  </div>
+
+  <div class="banner" id="banner"></div>
+
+  <h2>✔ 已合格(可去刷固件)</h2>
+  <div class="grid" id="g-pass"><div class="empty">暂无</div></div>
+
+  <h2>⏳ 标定中(约 20~30 分钟出结果)</h2>
+  <div class="grid" id="g-run"><div class="empty">暂无</div></div>
+
+  <h2>✖ 失败(重录标定 take 后重新派发)</h2>
+  <div class="grid" id="g-fail"><div class="empty">暂无</div></div>
+
+  <div class="footnote">
+    判定 = 云端 kalibr 全流水线 run 结论(含角点率、基线等质量闸门)。
+    有新结果后约 5~7 分钟上板;页面每 60 秒自动检查,时间为北京时间。
+    测试板(sn9999…)不计入统计。
+  </div>
+</div>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+let lastData=null;
+
+function hhmm(iso){
+  try{
+    return new Intl.DateTimeFormat("zh-CN",{timeZone:"Asia/Shanghai",
+      month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false})
+      .format(new Date(iso));
+  }catch(e){ return iso||"–"; }
+}
+
+function render(data){
+  const all=(data.devices||[]).slice().sort((a,b)=>a.sn<b.sn?-1:1);
+  const prod=all.filter(d=>!d.is_test);
+  const pick=s=>prod.filter(d=>s.indexOf(d.state)>=0);
+  const groups={ "g-pass":pick(["pass"]), "g-run":pick(["running","queued"]), "g-fail":pick(["fail"]) };
+  $("n-pass").textContent=groups["g-pass"].length;
+  $("n-run").textContent=groups["g-run"].length;
+  $("n-fail").textContent=groups["g-fail"].length;
+  $("n-all").textContent=prod.length;
+  for(const gid in groups){
+    const el=$(gid); el.textContent="";
+    if(!groups[gid].length){ el.innerHTML='<div class="empty">暂无</div>'; continue; }
+    for(const d of groups[gid]){
+      const c=document.createElement("div");
+      c.className="chip "+(d.state==="pass"?"pass":d.state==="fail"?"fail":"run");
+      const sn=document.createElement("span"); sn.className="b"; sn.textContent=d.sn;
+      const meta=document.createElement("small");
+      meta.textContent=(d.attempts>1?"第"+d.attempts+"次 · ":"")+hhmm(d.run_created_at);
+      c.appendChild(sn); c.appendChild(meta);
+      el.appendChild(c);
+    }
+  }
+  const now=new Intl.DateTimeFormat("zh-CN",{timeZone:"Asia/Shanghai",
+    hour:"2-digit",minute:"2-digit",hour12:false}).format(new Date());
+  $("fresh").textContent="状态变化于 "+hhmm(data.generated_at)+" · 已检查 "+now;
+}
+
+async function tick(){
+  try{
+    const r=await fetch("data.json?ts="+Date.now(),{cache:"no-store"});
+    if(!r.ok) throw new Error("http "+r.status);
+    lastData=await r.json();
+    render(lastData);
+    $("dot").classList.remove("bad");
+    $("banner").style.display="none";
+  }catch(e){
+    $("dot").classList.add("bad");
+    $("banner").textContent="刷新失败("+e.message+"),显示的是上一次数据,60 秒后自动重试。";
+    $("banner").style.display="block";
+    if(lastData) render(lastData);
+    else $("fresh").textContent="加载失败";
+  }
+}
+tick();
+setInterval(tick,60000);
+</script>
+</body>
+</html>
