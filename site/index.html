@@ -38,6 +38,8 @@ h2{font-size:16px; color:var(--muted); font-weight:500; letter-spacing:.1em; mar
   display:flex; align-items:baseline; justify-content:space-between; gap:8px}
 .chip small{font-family:"Microsoft YaHei",sans-serif; font-size:11px; font-weight:400; opacity:.75}
 .chip.pass{background:var(--pass-bg); color:var(--pass); border:1px solid var(--pass-line)}
+/* 复检:今天又过了一遍线,但结果沿用之前那次合格(蓝色,标注原日期) */
+.chip.pass.recheck{background:#e7f0fb; color:#1d4f91; border:1px solid #c3d8f0}
 .chip.fail{background:var(--fail-bg); color:var(--fail); border:1px solid transparent}
 .chip.run{background:var(--run-bg); color:var(--run); border:1px solid transparent}
 .chip.run .b{animation:pulse 1.4s ease-in-out infinite}
@@ -121,9 +123,14 @@ function dayLabel(key){
 function chipEl(d){
   const c=document.createElement("div");
   c.className="chip "+(d.state==="pass"?"pass":d.state==="fail"?"fail":"run");
+  let recheck="";
+  if(d.state==="pass"&&d.orig_date){   // 复检:结果本体是 orig_date 那次合格
+    c.classList.add("recheck");
+    recheck="复检·原"+parseInt(d.orig_date.slice(5,7),10)+"-"+parseInt(d.orig_date.slice(8),10)+" · ";
+  }
   const sn=document.createElement("span"); sn.className="b"; sn.textContent=d.sn;
   const meta=document.createElement("small");
-  meta.textContent=(d.attempts>1?"第"+d.attempts+"次 · ":"")+hhmm(d.run_created_at);
+  meta.textContent=recheck+(d.attempts>1?"第"+d.attempts+"次 · ":"")+hhmm(d.run_created_at);
   c.appendChild(sn); c.appendChild(meta);
   return c;
 }
