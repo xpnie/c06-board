@@ -51,8 +51,10 @@ h2{font-size:16px; color:var(--muted); font-weight:500; letter-spacing:.1em; mar
 .datehead b{font-size:16px; color:var(--ink)}
 .datehead.today b{color:var(--pass)}
 .datehead .cnt{font-variant-numeric:tabular-nums}
-/* 已合格区:每 10 台一个小间隔,对齐产线 10 台一批的节拍 */
-.grid.tens + .grid.tens{margin-top:18px}
+/* 已合格区:按投料批次分块(同批 10 台并行同时开跑,tag 时间戳聚类) */
+.batchhead{font-size:12.5px; color:var(--muted); margin:12px 0 6px;
+  font-variant-numeric:tabular-nums}
+.batchhead.re{color:#1d4f91}
 .banner{background:var(--fail-bg); color:var(--fail); border-radius:8px; padding:10px 14px;
   margin:14px 0; display:none}
 .footnote{margin-top:26px; font-size:12.5px; color:var(--muted); line-height:1.7}
@@ -75,7 +77,7 @@ h2{font-size:16px; color:var(--muted); font-weight:500; letter-spacing:.1em; mar
 
   <div class="banner" id="banner"></div>
 
-  <h2>✔ 已合格(按日期分组,今天在最上;每 10 台一个间隔 = 一批)</h2>
+  <h2>✔ 已合格(按日期分组,今天在最上;块 = 同批开跑,没过的这批就缺席)</h2>
   <div id="g-pass"><div class="empty">暂无</div></div>
 
   <h2>⏳ 标定中</h2>
@@ -153,32 +155,67 @@ function render(data){
     for(const d of ds) el.appendChild(chipEl(d));
   }
 
-  // 已合格:按日期分组(今天在最上),组内时间倒序,每 10 台开一个新块留空隙
+  // 已合格:按日期分组(今天在最上);组内按【投料批次】分块 —— 同批 10 台在
+  // 强机是并行同时开跑的,tag 里的开跑时间戳几乎相同,按它聚类(间隔>10 分钟
+  // 或满 10 台开新块)。没过的机器这批自然缺席,后一批绝不补位;复检(结果沿用
+  // 原日期的蓝色)单独归"复检"块,不混进生产批次。
+  const hhmmSh=t=>new Intl.DateTimeFormat("zh-CN",{timeZone:"Asia/Shanghai",
+    hour:"2-digit",minute:"2-digit",hour12:false}).format(new Date(t));
+  function stampMs(d){
+    // 批次锚点 = tag 开跑时间戳(北京时间);老数据没这字段,用 run 时间近似
+    if(d.stamp&&/^\d{8}-\d{6}$/.test(d.stamp)){
+      const s=d.stamp;
+      return Date.UTC(+s.slice(0,4),+s.slice(4,6)-1,+s.slice(6,8),
+                      +s.slice(9,11)-8,+s.slice(11,13),+s.slice(13,15));
+    }
+    return new Date(d.run_created_at).getTime();
+  }
   const el=$("g-pass"); el.textContent="";
   const ds=groups["g-pass"].slice().sort(byTime);
   if(!ds.length){ el.innerHTML='<div class="empty">暂无</div>'; }
   else {
     const today=dayKeySh(new Date().toISOString());
-    let curKey=null, grid=null, nInDay=0;
+    const days=[], byDay={};
     for(const d of ds){
       const k=dayKeySh(d.run_created_at);
-      if(k!==curKey){
-        curKey=k; nInDay=0;
-        const h=document.createElement("div");
-        h.className="datehead"+(k===today?" today":"");
-        const b=document.createElement("b"); b.textContent=dayLabel(k);
-        const c=document.createElement("span"); c.className="cnt";
-        c.textContent=ds.filter(x=>dayKeySh(x.run_created_at)===k).length+" 台";
-        h.appendChild(b); h.appendChild(c);
-        el.appendChild(h);
-        grid=null;
+      if(!byDay[k]){ byDay[k]=[]; days.push(k); }
+      byDay[k].push(d);
+    }
+    for(const k of days){
+      const chips=byDay[k];
+      const h=document.createElement("div");
+      h.className="datehead"+(k===today?" today":"");
+      const b=document.createElement("b"); b.textContent=dayLabel(k);
+      const c=document.createElement("span"); c.className="cnt";
+      c.textContent=chips.length+" 台";
+      h.appendChild(b); h.appendChild(c);
+      el.appendChild(h);
+      const re=chips.filter(d=>d.orig_date);
+      const normal=chips.filter(d=>!d.orig_date).sort((a,b)=>stampMs(a)-stampMs(b));
+      const clusters=[]; let prev=null;
+      for(const d of normal){
+        const t=stampMs(d);
+        if(!clusters.length || t-prev>600000 ||
+           clusters[clusters.length-1].length>=10) clusters.push([]);
+        clusters[clusters.length-1].push(d); prev=t;
       }
-      if(nInDay%10===0){
-        grid=document.createElement("div"); grid.className="grid tens";
-        el.appendChild(grid);
+      for(let i=clusters.length-1;i>=0;i--){
+        const cl=clusters[i];
+        const bh=document.createElement("div"); bh.className="batchhead";
+        bh.textContent=hhmmSh(stampMs(cl[0]))+" 开跑 · "+cl.length+" 台";
+        el.appendChild(bh);
+        const g=document.createElement("div"); g.className="grid";
+        for(const d of cl.slice().sort(byTime)) g.appendChild(chipEl(d));
+        el.appendChild(g);
       }
-      grid.appendChild(chipEl(d));
-      nInDay++;
+      if(re.length){
+        const bh=document.createElement("div"); bh.className="batchhead re";
+        bh.textContent="复检(结果沿用原日期) · "+re.length+" 台";
+        el.appendChild(bh);
+        const g=document.createElement("div"); g.className="grid";
+        for(const d of re.sort(byTime)) g.appendChild(chipEl(d));
+        el.appendChild(g);
+      }
     }
   }
   const now=new Intl.DateTimeFormat("zh-CN",{timeZone:"Asia/Shanghai",
