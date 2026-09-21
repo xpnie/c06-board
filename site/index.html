@@ -44,6 +44,13 @@ h2{font-size:16px; color:var(--muted); font-weight:500; letter-spacing:.1em; mar
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
 @media (prefers-reduced-motion:reduce){.chip.run .b{animation:none}}
 .empty{color:var(--muted); padding:6px 2px}
+.datehead{font-size:14px; color:var(--muted); margin:14px 0 8px; display:flex;
+  align-items:baseline; gap:8px}
+.datehead b{font-size:16px; color:var(--ink)}
+.datehead.today b{color:var(--pass)}
+.datehead .cnt{font-variant-numeric:tabular-nums}
+/* 已合格区:每 10 台一个小间隔,对齐产线 10 台一批的节拍 */
+.grid.tens + .grid.tens{margin-top:18px}
 .banner{background:var(--fail-bg); color:var(--fail); border-radius:8px; padding:10px 14px;
   margin:14px 0; display:none}
 .footnote{margin-top:26px; font-size:12.5px; color:var(--muted); line-height:1.7}
@@ -66,13 +73,13 @@ h2{font-size:16px; color:var(--muted); font-weight:500; letter-spacing:.1em; mar
 
   <div class="banner" id="banner"></div>
 
-  <h2>✔ 已合格(可去刷固件)</h2>
-  <div class="grid" id="g-pass"><div class="empty">暂无</div></div>
+  <h2>✔ 已合格(按日期分组,今天在最上;每 10 台一个间隔 = 一批)</h2>
+  <div id="g-pass"><div class="empty">暂无</div></div>
 
-  <h2>⏳ 标定中(约 20~30 分钟出结果)</h2>
+  <h2>⏳ 标定中</h2>
   <div class="grid" id="g-run"><div class="empty">暂无</div></div>
 
-  <h2>✖ 失败(重录标定 take 后重新派发)</h2>
+  <h2>✖ 失败(重录标定素材后重标)</h2>
   <div class="grid" id="g-fail"><div class="empty">暂无</div></div>
 
   <div class="footnote">
@@ -95,26 +102,76 @@ function hhmm(iso){
   }catch(e){ return iso||"–"; }
 }
 
+// 北京时间的日期键/标签(看板给工厂看,统一按 Asia/Shanghai 分组,与看的人手机时区无关)
+function dayKeySh(iso){
+  try{
+    return new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Shanghai",
+      year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(iso));
+  }catch(e){ return "?"; }
+}
+function dayLabel(key){
+  const today=dayKeySh(new Date().toISOString());
+  const yest=dayKeySh(new Date(Date.now()-864e5).toISOString());
+  const md=parseInt(key.slice(5,7),10)+"月"+parseInt(key.slice(8),10)+"日";
+  if(key===today) return md+"(今天)";
+  if(key===yest)  return md+"(昨天)";
+  return md;
+}
+
+function chipEl(d){
+  const c=document.createElement("div");
+  c.className="chip "+(d.state==="pass"?"pass":d.state==="fail"?"fail":"run");
+  const sn=document.createElement("span"); sn.className="b"; sn.textContent=d.sn;
+  const meta=document.createElement("small");
+  meta.textContent=(d.attempts>1?"第"+d.attempts+"次 · ":"")+hhmm(d.run_created_at);
+  c.appendChild(sn); c.appendChild(meta);
+  return c;
+}
+
 function render(data){
-  const all=(data.devices||[]).slice().sort((a,b)=>a.sn<b.sn?-1:1);
-  const prod=all.filter(d=>!d.is_test);
+  const byTime=(a,b)=>a.run_created_at<b.run_created_at?1:-1;   // 新的在前
+  const prod=(data.devices||[]).filter(d=>!d.is_test);
   const pick=s=>prod.filter(d=>s.indexOf(d.state)>=0);
   const groups={ "g-pass":pick(["pass"]), "g-run":pick(["running","queued"]), "g-fail":pick(["fail"]) };
   $("n-pass").textContent=groups["g-pass"].length;
   $("n-run").textContent=groups["g-run"].length;
   $("n-fail").textContent=groups["g-fail"].length;
   $("n-all").textContent=prod.length;
-  for(const gid in groups){
+
+  // 标定中/失败:平铺,时间倒序
+  for(const gid of ["g-run","g-fail"]){
     const el=$(gid); el.textContent="";
-    if(!groups[gid].length){ el.innerHTML='<div class="empty">暂无</div>'; continue; }
-    for(const d of groups[gid]){
-      const c=document.createElement("div");
-      c.className="chip "+(d.state==="pass"?"pass":d.state==="fail"?"fail":"run");
-      const sn=document.createElement("span"); sn.className="b"; sn.textContent=d.sn;
-      const meta=document.createElement("small");
-      meta.textContent=(d.attempts>1?"第"+d.attempts+"次 · ":"")+hhmm(d.run_created_at);
-      c.appendChild(sn); c.appendChild(meta);
-      el.appendChild(c);
+    const ds=groups[gid].slice().sort(byTime);
+    if(!ds.length){ el.innerHTML='<div class="empty">暂无</div>'; continue; }
+    for(const d of ds) el.appendChild(chipEl(d));
+  }
+
+  // 已合格:按日期分组(今天在最上),组内时间倒序,每 10 台开一个新块留空隙
+  const el=$("g-pass"); el.textContent="";
+  const ds=groups["g-pass"].slice().sort(byTime);
+  if(!ds.length){ el.innerHTML='<div class="empty">暂无</div>'; }
+  else {
+    const today=dayKeySh(new Date().toISOString());
+    let curKey=null, grid=null, nInDay=0;
+    for(const d of ds){
+      const k=dayKeySh(d.run_created_at);
+      if(k!==curKey){
+        curKey=k; nInDay=0;
+        const h=document.createElement("div");
+        h.className="datehead"+(k===today?" today":"");
+        const b=document.createElement("b"); b.textContent=dayLabel(k);
+        const c=document.createElement("span"); c.className="cnt";
+        c.textContent=ds.filter(x=>dayKeySh(x.run_created_at)===k).length+" 台";
+        h.appendChild(b); h.appendChild(c);
+        el.appendChild(h);
+        grid=null;
+      }
+      if(nInDay%10===0){
+        grid=document.createElement("div"); grid.className="grid tens";
+        el.appendChild(grid);
+      }
+      grid.appendChild(chipEl(d));
+      nInDay++;
     }
   }
   const now=new Intl.DateTimeFormat("zh-CN",{timeZone:"Asia/Shanghai",
